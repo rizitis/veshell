@@ -186,6 +186,7 @@ lazy_static! {
         (0x000000c8, 0x00070071), // f22
         (0x000000c9, 0x00070072), // f23
         (0x000000ca, 0x00070073), // f24
+        (0x000000d0, 0x000c00b0), // mediaPlay   (evdev 200 KEY_PLAYCD)
         (0x000000d1, 0x000c00b1), // mediaPause
         (0x000000d6, 0x000c0203), // close
         (0x000000d7, 0x000c00b0), // mediaPlay

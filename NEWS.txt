@@ -1,0 +1,23 @@
+Fixed so far:
+============
+NOTE: I run audiod on Slackware64-current, so a PipeWire session is
+always up. Upstream issue #41 (hangs on the loading screen unless
+another session is running) does not reproduce here for that reason:
+the shell blocks on a PulseAudio client that never connects otherwise.
+
+---
+The compositor no longer dies when it receives an unmapped key (connecting a Bluetooth audio device was enough to kill the session); wl_callback.done() now carries a monotonic timestamp instead of always reporting zero, which is what left Firefox content areas and video players blank; and the path libapp.so is loaded from is no longer hardcoded to /usr/lib/veshell, which does not exist on distributions that separate 32- and 64-bit libraries.
+
+Still broken: window layout is not persisted, text input breaks on certain transform matrices, wp_viewporter is missing, there is no screencopy protocol so screenshots are impossible, and the keyboard layout cannot be switched at runtime.
+
+Still broken:
+=============
+- Window layout is not persisted
+- Text input breaks on certain transform matrices
+- wp_viewporter is missing
+- No screencopy protocol, so screenshots are impossible
+- Keyboard layout cannot be switched at runtime
+- flutter_svg throws on icons with pattern elements lacking a viewBox,
+  which empties the application drawer
+- Two zwp_linux_dmabuf_v1 globals are created in drm_backend.rs
+

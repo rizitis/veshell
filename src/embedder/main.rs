@@ -60,6 +60,21 @@ pub struct FlutterState<BackendData: Backend + 'static> {
     pub mouse_button_tracker: MouseButtonTracker,
 }
 
+lazy_static::lazy_static! {
+    /// Process start, used as the epoch for wl_callback.done() timestamps.
+    static ref START_TIME: std::time::Instant = std::time::Instant::now();
+}
+
+/// Milliseconds since process start.
+///
+/// wl_callback.done() requires a monotonically increasing millisecond
+/// timestamp; clients use the delta between two callbacks to advance their
+/// animation clock. Passing a value that never grows makes them believe no
+/// time has passed.
+pub fn frame_time_ms() -> u32 {
+    START_TIME.elapsed().as_millis() as u32
+}
+
 pub fn send_frames_surface_tree(surface: &wl_surface::WlSurface, time: u32) {
     with_surface_tree_downward(
         surface,

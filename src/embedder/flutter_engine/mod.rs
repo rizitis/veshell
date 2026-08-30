@@ -183,6 +183,39 @@ impl<BackendData: Backend + 'static> FlutterEngine<BackendData> {
             lib_path = format!("/usr/local/lib/veshell");
         }
 
+        // Distributions that separate 32- and 64-bit libraries install into
+        // /usr/lib64 (Slackware64, Fedora, openSUSE, ...), so the hardcoded
+        // /usr/lib above is wrong there and libapp.so is never found.
+        //
+        // VESHELL_LIB_DIR is already the variable extra/build/mod.rs uses to
+        // set the RPATH, so baking the same value in here keeps the engine
+        // and the linker pointing at one directory. Baked in at compile
+        // time, so the installed binary needs no environment; the runtime
+        // variable still wins if it is set, which is handy for testing an
+        // uninstalled build.
+        if let Some(dir) = option_env!("VESHELL_LIB_DIR") {
+            if !dir.is_empty() {
+                lib_path = dir.to_string();
+            }
+        }
+        if let Ok(dir) = std::env::var("VESHELL_LIB_DIR") {
+            if !dir.is_empty() {
+                lib_path = dir;
+            }
+        }
+
+        // Same idea for the asset bundle.
+        if let Some(dir) = option_env!("VESHELL_DATA_DIR") {
+            if !dir.is_empty() {
+                bundle_root = dir.to_string();
+            }
+        }
+        if let Ok(dir) = std::env::var("VESHELL_DATA_DIR") {
+            if !dir.is_empty() {
+                bundle_root = dir;
+            }
+        }
+
         let src_bundle_root = format!("src/shell/build/linux/{arch}/{flutter_engine_build}/bundle");
 
         // check if the src_bundle_root exists

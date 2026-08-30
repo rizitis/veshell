@@ -110,11 +110,18 @@ pub fn handle_keyboard_event<BackendData: Backend + 'static>(
         return;
     }
 
-    data.flutter_engine
+    // Do NOT panic on keys we cannot translate (e.g. media keys coming from a
+    // freshly connected Bluetooth device). An unmapped key must be ignored,
+    // never fatal for the whole compositor.
+    if let Err(err) = data
+        .flutter_engine
         .as_mut()
         .unwrap()
         .send_key_event(veshell_key_event, false)
-        .expect("Failed to send key event to Flutter");
+    {
+        error!("Failed to send key event to Flutter: {err}");
+        return;
+    }
 
     // Initiate key repeat.
     // The callback that gets called repeatedly is defined in the constructor of `State`.

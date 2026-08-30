@@ -53,7 +53,7 @@ use crate::flutter_engine::embedder::FlutterPointerDeviceKind_kFlutterPointerDev
 use crate::flutter_engine::view::OutputViewIdWrapper;
 use crate::flutter_engine::FlutterEngine;
 use crate::keyboard::{self, handle_keyboard_event};
-use crate::{flutter_engine::EmbedderChannels, send_frames_surface_tree, State};
+use crate::{flutter_engine::EmbedderChannels, frame_time_ms, send_frames_surface_tree, State};
 use crate::{settings, state};
 
 use super::render::{get_render_elements, get_surface_elements, VeshellRenderElements};
@@ -572,21 +572,15 @@ pub fn run_x11_client() {
                 }
             }
 
-            let start_time = std::time::Instant::now();
+            let frame_time = frame_time_ms();
             for surface in state.xdg_shell_state.toplevel_surfaces() {
-                send_frames_surface_tree(
-                    surface.wl_surface(),
-                    start_time.elapsed().as_millis() as u32,
-                );
+                send_frames_surface_tree(surface.wl_surface(), frame_time);
             }
             for surface in state.xdg_popups.values() {
-                send_frames_surface_tree(
-                    surface.wl_surface(),
-                    start_time.elapsed().as_millis() as u32,
-                );
+                send_frames_surface_tree(surface.wl_surface(), frame_time);
             }
             for surface in state.x11_surface_per_wl_surface.keys() {
-                send_frames_surface_tree(surface, start_time.elapsed().as_millis() as u32);
+                send_frames_surface_tree(surface, frame_time);
             }
         }
         let result = event_loop.dispatch(None, &mut state);

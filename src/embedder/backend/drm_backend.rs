@@ -73,7 +73,7 @@ use crate::flutter_engine::FlutterEngine;
 use crate::keyboard::handle_keyboard_event;
 use crate::settings::{self, MonitorConfiguration, MouseAndTouchpadSettings};
 use crate::state;
-use crate::{flutter_engine::EmbedderChannels, send_frames_surface_tree, State};
+use crate::{flutter_engine::EmbedderChannels, frame_time_ms, send_frames_surface_tree, State};
 
 use super::render::{get_render_elements, CLEAR_COLOR};
 use super::Backend;
@@ -1160,21 +1160,15 @@ impl State<DrmBackend> {
         for baton in drained {
             self.flutter_engine().on_vsync(baton, mhz as u32).unwrap();
         }
-        let start_time = std::time::Instant::now();
+        let frame_time = frame_time_ms();
         for surface in self.xdg_shell_state.toplevel_surfaces() {
-            send_frames_surface_tree(
-                surface.wl_surface(),
-                start_time.elapsed().as_millis() as u32,
-            );
+            send_frames_surface_tree(surface.wl_surface(), frame_time);
         }
         for surface in self.xdg_popups.values() {
-            send_frames_surface_tree(
-                surface.wl_surface(),
-                start_time.elapsed().as_millis() as u32,
-            );
+            send_frames_surface_tree(surface.wl_surface(), frame_time);
         }
         for surface in self.x11_surface_per_wl_surface.keys() {
-            send_frames_surface_tree(surface, start_time.elapsed().as_millis() as u32);
+            send_frames_surface_tree(surface, frame_time);
         }
         let cursor_status = {
             let cursor_image_status = self.cursor_image_status.lock().unwrap();
@@ -1188,7 +1182,7 @@ impl State<DrmBackend> {
         };
 
         if let CursorImageStatus::Surface(wl_surface) = cursor_status {
-            send_frames_surface_tree(&wl_surface, start_time.elapsed().as_millis() as u32)
+            send_frames_surface_tree(&wl_surface, frame_time)
         }
     }
 

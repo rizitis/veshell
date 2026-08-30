@@ -1,3 +1,19 @@
+## Fork - work in progress, for personal use
+>
+> This is a personal fork of [free-explorers/veshell](https://github.com/free-explorers/veshell),
+> branched from commit `7c28384` (12 September 2025). Upstream has not
+> committed for about a year and its other forks are equally stale, so this
+> one is maintained independently. It is not affiliated with the Free
+> Explorers Collective, and pull requests here do not reach them.
+>
+> The work exists to get Veshell running on Slackware64-current, which uses
+> elogind rather than systemd. It is unfinished, unsupported, and changes
+> without notice. Do not build from it expecting a working desktop.
+>
+> Original README follows.
+
+---
+
 ![Veshell](docs/assets/veshell_banner_dark.svg#gh-dark-mode-only)
 ![Veshell](docs/assets/veshell_banner_light.svg#gh-light-mode-only)
 ---

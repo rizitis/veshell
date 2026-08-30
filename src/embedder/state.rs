@@ -273,11 +273,14 @@ impl<BackendData: Backend + 'static> State<BackendData> {
         let key_repeater = KeyRepeater::new(
             loop_handle.clone(),
             |event, data: &mut State<BackendData>| {
-                data.flutter_engine
+                if let Err(err) = data
+                    .flutter_engine
                     .as_mut()
                     .unwrap()
                     .send_key_event(event, true)
-                    .expect("Failed to send key event");
+                {
+                    warn!("Failed to send repeated key event to Flutter: {err}");
+                }
             },
         );
 
