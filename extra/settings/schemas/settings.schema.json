@@ -13,6 +13,25 @@
                 "layout": {
                     "type": "string"
                 },
+                "rules": {
+                    "type": "string",
+                    "description": "XKB rules file. Empty means the default (evdev)."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "XKB keyboard model, e.g. pc105. Empty means the default."
+                },
+                "variant": {
+                    "type": "string",
+                    "description": "XKB variant, or a comma separated list matching layout."
+                },
+                "options": {
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "description": "XKB options, e.g. grp:alt_shift_toggle to switch between layouts."
+                },
                 "swapAltAndWin": {
                     "type": "boolean"
                 },

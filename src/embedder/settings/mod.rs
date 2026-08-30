@@ -5,6 +5,7 @@ use calloop_notify::NotifySource;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use smithay::input::keyboard::XkbConfig;
 use smithay::output::Mode;
 use smithay::reexports::calloop::LoopHandle;
 use smithay::utils::{Logical, Physical, Point, Size};
@@ -21,8 +22,45 @@ type MonitorSettingsCallback<BackendData> = fn(&mut State<BackendData>, &str);
 #[serde(rename_all = "camelCase")]
 
 pub struct KeyboardSettings {
+    /// XKB layout name, or a comma separated list for several groups,
+    /// e.g. "us,gr". Switching between groups needs a toggle in `options`.
     pub layout: String,
     pub swap_alt_and_win: bool,
+
+    /// The remaining four RMLVO components. Only `layout` used to be
+    /// configurable, which left no way to select a variant or, more
+    /// importantly, to set a group toggle -- so a second layout could be
+    /// loaded but never reached.
+    ///
+    /// All four default to empty, which is what XkbConfig::default()
+    /// produced before, so existing settings.json files keep working.
+    #[serde(default)]
+    pub rules: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub variant: String,
+    /// e.g. "grp:alt_shift_toggle" or "grp:caps_toggle,compose:ralt".
+    #[serde(default)]
+    pub options: Option<String>,
+}
+
+impl KeyboardSettings {
+    /// Build the xkb configuration these settings describe.
+    ///
+    /// An empty `options` string is mapped to None: xkbcommon treats
+    /// Some("") as "no options at all", which is not the same as letting
+    /// the rules file apply its defaults, and an empty string in JSON is
+    /// far more likely to mean "I left this blank".
+    pub fn xkb_config(&self) -> XkbConfig<'_> {
+        XkbConfig {
+            rules: &self.rules,
+            model: &self.model,
+            layout: &self.layout,
+            variant: &self.variant,
+            options: self.options.clone().filter(|o| !o.trim().is_empty()),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

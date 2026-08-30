@@ -1,0 +1,19 @@
+# HOW TO EDIT THIS FILE:
+# The "handy ruler" below makes it easier to edit a package description.
+# Line up the first '|' above the ':' following the base package name, and
+# the '|' on the right side marks the last column you can put a character in.
+# You must make exactly 11 lines for the formatting to be correct.  It's also
+# customary to leave one space after the ':' except on otherwise blank lines.
+
+       |-----handy-ruler------------------------------------------------------|
+veshell: veshell (spatial not-desktop environment for Wayland)
+veshell:
+veshell: Veshell is a Wayland compositor built with Rust (smithay) and a
+veshell: Flutter shell. Instead of stacking windows it lays applications out
+veshell: in a two-dimensional space you navigate with directional keys,
+veshell: leaning on spatial memory rather than taskbars and alt-tab.
+veshell:
+veshell: This is a work-in-progress fork of an upstream project that has been
+veshell: dormant for about a year. Start a session from a text console with
+veshell: veshell-session. See NEWS.txt for what works and what does not.
+veshell:

@@ -1,0 +1,310 @@
+#!/bin/bash
+
+# SlackBuild for veshell -- builds this repository, not an upstream release.
+#
+# 2026 Ioannis Anagnostakis, Crete, Greece
+#
+# Redistribution and use of this script, with or without modification, is
+# permitted provided that the following conditions are met:
+#
+# 1. Redistributions of this script must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR "AS IS" AND ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+# EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+# TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+# LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+# NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# ---------------------------------------------------------------------------
+# Usage, from the top of a checkout:
+#
+#     sudo ./veshell.SlackBuild
+#
+# The repository is never written to. Its working tree is copied into
+# $TMP and everything -- the Flutter SDK clone, the downloaded engine,
+# the cargo target directory, the package root -- happens there, then
+# $TMP is removed again. Run it as many times as you like from a git
+# tree you are actively editing; `git status` stays clean.
+#
+# What it does need:
+#
+#   * root, because makepkg has to record root:root ownership
+#   * network, because upstream's build.rs clones the Flutter SDK and
+#     downloads a prebuilt engine at build time
+#   * about 10 GB free in $TMP
+#
+# Uncommitted changes ARE included: the working tree is what gets built,
+# not HEAD. The package version is marked _dirty when that happens, so a
+# package built from unsaved edits is recognisable afterwards.
+# ---------------------------------------------------------------------------
+
+CWD=$( cd "$( dirname "$0" )" && pwd )
+
+PRGNAM=veshell
+BUILD=${BUILD:-1}
+TAG=${TAG:-_rtz}
+PKGTYPE=${PKGTYPE:-txz}
+
+TMP=${TMP:-/tmp/FRG}
+PKG=$TMP/package-$PRGNAM
+OUTPUT=${OUTPUT:-/tmp}
+
+# Remove the build tree once the package exists. It is roughly 10 GB and
+# none of it is reusable -- the next run re-clones the Flutter SDK anyway.
+# Set CLEANUP=no while debugging a build.
+CLEANUP=${CLEANUP:-yes}
+
+if [ -z "$ARCH" ]; then
+  case "$( uname -m )" in
+    i?86) ARCH=i586 ;;
+    arm*) ARCH=arm ;;
+       *) ARCH=$( uname -m ) ;;
+  esac
+fi
+
+# veshell is 64-bit only; upstream declares x86_64 and aarch64.
+case "$ARCH" in
+  x86_64)  LIBDIRSUFFIX="64" ; BUNDLE_ARCH="x64"   ;;
+  aarch64) LIBDIRSUFFIX="64" ; BUNDLE_ARCH="arm64" ;;
+  *) echo "$ARCH is not supported by veshell." ; exit 1 ;;
+esac
+
+set -e
+
+if [ "$(id -u)" != "0" ]; then
+  echo "This SlackBuild must be run as root (makepkg needs root:root)."
+  exit 1
+fi
+
+# ------------------------------------------------------------- preflight --
+
+for f in Cargo.toml src/embedder/main.rs extra/assets/veshell.desktop \
+         extra/settings/default/settings.json slack-desc; do
+  [ -e "$CWD/$f" ] || { echo "Not a veshell checkout: $CWD/$f is missing."; exit 1; }
+done
+
+# slack-desc needs exactly 11 "$PRGNAM:" lines or pkgtool renders junk.
+desc_lines=$( grep -c "^$PRGNAM:" "$CWD/slack-desc" || true )
+if [ "$desc_lines" != "11" ]; then
+  echo "slack-desc has $desc_lines '$PRGNAM:' lines, expected exactly 11."
+  exit 1
+fi
+
+for t in cargo tar /sbin/makepkg; do
+  command -v $t >/dev/null 2>&1 || { echo "missing tool: $t"; exit 1; }
+done
+
+# ---------------------------------------------------------------- version --
+#
+# Commit date plus short sha, e.g. 20250912_7c28384.
+#
+# Upstream tags look like "alpha.1", so git describe yields something like
+# alpha.1.r159.g7c28384: descriptive, but it sorts badly. "alpha" is not a
+# number and the commit count restarts at every new tag, so a later build
+# can compare as older. A commit date only ever increases.
+
+if [ -d "$CWD/.git" ] && command -v git >/dev/null 2>&1; then
+  GITSHA=$( git -C "$CWD" rev-parse HEAD )
+  GITDESC=$( git -C "$CWD" describe --long --tags 2>/dev/null || echo "" )
+  GITBRANCH=$( git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "" )
+  VERSION=${VERSION:-$( git -C "$CWD" log -1 --format=%cd --date=format:%Y%m%d )_$( git -C "$CWD" rev-parse --short=7 HEAD )}
+  # Building edits that are not committed yet is fine and often the point,
+  # but the package should say so.
+  if ! git -C "$CWD" diff --quiet HEAD 2>/dev/null; then
+    VERSION="${VERSION}_dirty"
+    echo ">>> working tree has uncommitted changes, version marked _dirty"
+  fi
+else
+  GITSHA="(not a git checkout)"
+  GITDESC=""
+  GITBRANCH=""
+  VERSION=${VERSION:-$( date +%Y%m%d )}
+fi
+
+echo ">>> version: $VERSION"
+[ -n "$GITBRANCH" ] && echo ">>> branch:  $GITBRANCH"
+echo ">>> commit:  $GITSHA"
+echo ">>> source:  $CWD"
+echo ">>> build:   $TMP/$PRGNAM"
+
+# ------------------------------------------------------- copy the source --
+#
+# Never build in place: cargo drops build/, the Flutter SDK lands in
+# .flutter_sdk, and the Dart tooling writes all over src/shell. Copying
+# the working tree keeps `git status` clean no matter how often you build.
+#
+# The excludes are both correctness and speed -- .flutter_sdk alone can be
+# several GB left over from an in-tree build.
+
+rm -rf "$TMP/$PRGNAM" "$PKG"
+mkdir -p "$TMP/$PRGNAM" "$PKG" "$OUTPUT"
+
+echo ">>> copying working tree"
+tar -c -C "$CWD" \
+    --exclude=./.git \
+    --exclude=./.flutter_sdk \
+    --exclude=./build \
+    --exclude=./target \
+    --exclude=./src/shell/build \
+    --exclude=./src/shell/.dart_tool \
+    . | tar -x -C "$TMP/$PRGNAM"
+
+cd "$TMP/$PRGNAM"
+
+chown -R root:root .
+find . ! -type l -perm /6000 -exec chmod a-s {} +
+find . ! -type l -type d ! -perm 755 -exec chmod 755 {} +
+find . ! -type l -type f -perm /111 ! -perm 755 -exec chmod 755 {} +
+find . ! -type l -type f ! -perm /111 ! -perm 644 -exec chmod 644 {} +
+
+# ------------------------------------------------------------------ build --
+#
+# VESHELL_LIB_DIR is read by extra/build/flutter_engine_lib.rs and becomes
+# the RPATH of the binary. This fork also reads it in
+# src/embedder/flutter_engine/mod.rs to locate libapp.so, which upstream
+# hardcodes to /usr/lib/veshell -- wrong on any multilib layout.
+# VESHELL_DATA_DIR does the same for the Flutter asset bundle.
+#
+# Both must be the *installed* paths, never $PKG paths.
+
+export VESHELL_LIB_DIR=/usr/lib${LIBDIRSUFFIX}/$PRGNAM
+export VESHELL_DATA_DIR=/usr/share/$PRGNAM
+
+# bindgen needs libclang.
+export LIBCLANG_PATH=${LIBCLANG_PATH:-/usr/lib${LIBDIRSUFFIX}}
+
+# Keep cargo's registry inside $TMP rather than /root/.cargo, so cleanup
+# removes everything the build downloaded.
+export CARGO_HOME=$TMP/$PRGNAM/.cargo
+
+cargo build --profile=release
+
+# ---------------------------------------------------------------- install --
+
+# .cargo/config.toml redirects the target dir to build/target
+install -D -m 0755 build/target/release/$PRGNAM $PKG/usr/bin/$PRGNAM
+install -D -m 0755 extra/assets/veshell-session $PKG/usr/bin/veshell-session
+
+install -D -m 0644 extra/assets/$PRGNAM.desktop \
+  $PKG/usr/share/wayland-sessions/$PRGNAM.desktop
+install -D -m 0644 extra/assets/$PRGNAM-portals.conf \
+  $PKG/usr/share/xdg-desktop-portal/$PRGNAM-portals.conf
+
+# Deliberately NOT installed: veshell.service, veshell-shutdown.target.
+# They are systemd user units and do nothing here.
+
+# Flutter engine and the compiled Dart shell.
+# Mode 0755: these are ELF shared objects, and sbopkglint's 20-arch test
+# fails a package that ships libraries 0644.
+install -D -m 0755 extra/third_party/flutter_engine/release/libflutter_engine.so \
+  $PKG/usr/lib${LIBDIRSUFFIX}/$PRGNAM/libflutter_engine.so
+install -D -m 0755 \
+  src/shell/build/linux/$BUNDLE_ARCH/release/bundle/lib/libapp.so \
+  $PKG/usr/lib${LIBDIRSUFFIX}/$PRGNAM/libapp.so
+
+mkdir -p $PKG/usr/share/$PRGNAM/data
+cp -a src/shell/build/linux/$BUNDLE_ARCH/release/bundle/data/* \
+  $PKG/usr/share/$PRGNAM/data/
+
+# Default settings and JSON schemas. settings/mod.rs falls back to
+# /usr/share/veshell/settings/default when VESHELL_DEFAULT_CONFIG_DIR is
+# unset, so this path is load-bearing.
+mkdir -p $PKG/usr/share/$PRGNAM/settings
+cp -a extra/settings/* $PKG/usr/share/$PRGNAM/settings/
+
+# Strip only our own binary.
+#
+# libapp.so is a Dart AOT snapshot and libflutter_engine.so is a prebuilt
+# third-party blob; the engine resolves snapshot symbols out of libapp.so
+# with dlsym at runtime. Stripping either saves a few MB and risks a shell
+# that loads but renders nothing.
+strip --strip-unneeded $PKG/usr/bin/$PRGNAM
+
+# ------------------------------------------------------------------- docs --
+
+mkdir -p $PKG/usr/doc/$PRGNAM-$VERSION
+cp -a LICENSE README.md docs $PKG/usr/doc/$PRGNAM-$VERSION/
+[ -e NEWS.txt ] && cp -a NEWS.txt $PKG/usr/doc/$PRGNAM-$VERSION/
+cat "$CWD/$PRGNAM.SlackBuild" > $PKG/usr/doc/$PRGNAM-$VERSION/$PRGNAM.SlackBuild
+
+{
+  echo "source:   $CWD"
+  echo "branch:   ${GITBRANCH:-n/a}"
+  echo "commit:   $GITSHA"
+  echo "describe: ${GITDESC:-n/a}"
+  echo "version:  $VERSION"
+  echo "built:    $( date -u +%Y-%m-%dT%H:%M:%SZ )"
+  case "$VERSION" in
+    *_dirty) echo ""
+             echo "NOTE: built from a working tree with uncommitted changes;"
+             echo "the commit above does not fully describe this package." ;;
+  esac
+} > $PKG/usr/doc/$PRGNAM-$VERSION/BUILD-INFO
+
+mkdir -p $PKG/install
+cat "$CWD/slack-desc" > $PKG/install/slack-desc
+
+chown -R root:root $PKG
+find $PKG/usr/doc -type f -exec chmod 644 {} +
+find $PKG/usr/doc -type d -exec chmod 755 {} +
+
+# ------------------------------------------------------------- verify pkg --
+
+fail=""
+for f in usr/bin/$PRGNAM \
+         usr/bin/veshell-session \
+         usr/lib${LIBDIRSUFFIX}/$PRGNAM/libflutter_engine.so \
+         usr/lib${LIBDIRSUFFIX}/$PRGNAM/libapp.so \
+         usr/share/$PRGNAM/settings/default/settings.json \
+         usr/share/$PRGNAM/data/icudtl.dat \
+         usr/share/wayland-sessions/$PRGNAM.desktop \
+         usr/share/xdg-desktop-portal/$PRGNAM-portals.conf \
+         install/slack-desc \
+         usr/doc/$PRGNAM-$VERSION/$PRGNAM.SlackBuild ; do
+  [ -s "$PKG/$f" ] || fail="$fail $f"
+done
+if [ -n "$fail" ]; then
+  echo "Package tree is missing or has empty:$fail"
+  exit 1
+fi
+
+# The binary must carry an absolute RPATH into the installed lib dir,
+# otherwise it only runs from the build tree.
+if command -v readelf >/dev/null 2>&1; then
+  if ! readelf -d "$PKG/usr/bin/$PRGNAM" \
+       | grep -qE "R(UN)?PATH.*/usr/lib${LIBDIRSUFFIX}/$PRGNAM"; then
+    echo "RPATH check failed: $PKG/usr/bin/$PRGNAM does not reference"
+    echo "/usr/lib${LIBDIRSUFFIX}/$PRGNAM. VESHELL_LIB_DIR did not take effect."
+    exit 1
+  fi
+  echo ">>> RPATH ok"
+fi
+
+cd $PKG
+/sbin/makepkg -l y -c n $OUTPUT/$PRGNAM-$VERSION-$ARCH-$BUILD$TAG.$PKGTYPE
+
+PKGFILE=$OUTPUT/$PRGNAM-$VERSION-$ARCH-$BUILD$TAG.$PKGTYPE
+
+# ---------------------------------------------------------------- cleanup --
+
+if [ "$CLEANUP" = "yes" ] && [ -s "$PKGFILE" ]; then
+  echo ">>> cleaning $TMP"
+  cd /
+  rm -rf "$TMP/$PRGNAM" "$PKG"
+  rmdir "$TMP" 2>/dev/null || true
+else
+  echo ">>> keeping build tree in $TMP/$PRGNAM (CLEANUP=$CLEANUP)"
+fi
+
+echo ""
+echo ">>> built $PKGFILE"
+
+if command -v sbopkglint >/dev/null 2>&1; then
+  echo ">>> now run: sbopkglint $PKGFILE"
+fi

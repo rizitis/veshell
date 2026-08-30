@@ -1,14 +1,41 @@
-Fixed so far:
-============
 NOTE: I run audiod on Slackware64-current, so a PipeWire session is
 always up. Upstream issue #41 (hangs on the loading screen unless
 another session is running) does not reproduce here for that reason:
 the shell blocks on a PulseAudio client that never connects otherwise.
 
----
-The compositor no longer dies when it receives an unmapped key (connecting a Bluetooth audio device was enough to kill the session); wl_callback.done() now carries a monotonic timestamp instead of always reporting zero, which is what left Firefox content areas and video players blank; and the path libapp.so is loaded from is no longer hardcoded to /usr/lib/veshell, which does not exist on distributions that separate 32- and 64-bit libraries.
+Fixed so far:
+=============
+- The compositor no longer dies when it receives an unmapped key.
+  send_key_event() returns Err for any keycode missing from
+  XKB_TO_PHYSICAL_KEY_MAP and both call sites used .expect(), so one
+  unknown key took down the session and every client with it. Connecting
+  a Bluetooth audio device was enough: BlueZ creates an AVRCP input
+  device that emits KEY_PLAYCD, which the map did not contain.
 
-Still broken: window layout is not persisted, text input breaks on certain transform matrices, wp_viewporter is missing, there is no screencopy protocol so screenshots are impossible, and the keyboard layout cannot be switched at runtime.
+- wl_callback.done() carries a monotonic timestamp instead of always
+  reporting zero. start_time was created on the line above the loop that
+  sent the callbacks, so elapsed() was never more than a few
+  microseconds. Clients derive their animation delta from that value and
+  concluded no time had passed, which is what left Firefox content areas
+  and video players blank.
+
+- The path libapp.so is loaded from is no longer hardcoded to
+  /usr/lib/veshell, which does not exist on distributions that separate
+  32- and 64-bit libraries. On Slackware64 the compositor started,
+  failed to find the AOT snapshot and exited immediately. It now comes
+  from VESHELL_LIB_DIR, the variable the build script already uses for
+  the RPATH; VESHELL_DATA_DIR does the same for the asset bundle.
+
+- The full xkb configuration is settable, not just the layout. rules,
+  model, variant and options never reached XkbConfig, and without
+  options there is no way to set a group toggle -- a second layout could
+  be loaded but never reached. Greek works now. Existing settings.json
+  files are unaffected; the new keys all default to empty.
+
+- veshell-session falls back to dbus-run-session where there is no user
+  service manager, instead of printing "No systemd or dinit detected"
+  and giving up. That made the .desktop entry a display manager reads
+  useless on Slackware, Void, Alpine, Gentoo and the BSDs.
 
 Still broken:
 =============
@@ -16,8 +43,8 @@ Still broken:
 - Text input breaks on certain transform matrices
 - wp_viewporter is missing
 - No screencopy protocol, so screenshots are impossible
-- Keyboard layout cannot be switched at runtime
 - flutter_svg throws on icons with pattern elements lacking a viewBox,
   which empties the application drawer
 - Two zwp_linux_dmabuf_v1 globals are created in drm_backend.rs
-
+- get_settings() re-reads and re-parses both settings files on every
+  key press

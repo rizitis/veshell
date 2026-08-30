@@ -11,8 +11,16 @@ if [ -n "$SHELL" ] &&
   fi
 fi
 
+# Cursor theme. load_cursor_theme() in src/embedder/cursor.rs falls back to
+# a theme literally named "default", which several distributions do not
+# ship; without one veshell draws its built-in arrow that never changes
+# shape. Only a default -- the environment still wins.
+: "${XCURSOR_THEME:=Adwaita}"
+: "${XCURSOR_SIZE:=24}"
+export XCURSOR_THEME XCURSOR_SIZE
+
 # Try to detect the service manager that is being used
-if hash systemctl &> /dev/null; then
+if hash systemctl 2>/dev/null; then
     # Make sure there's no already running session.
     if systemctl --user -q is-active veshell.service; then
       echo 'A veshell session is already running.'
@@ -41,15 +49,15 @@ if hash systemctl &> /dev/null; then
 
     # Unset environment that we've set.
     systemctl --user unset-environment WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
-elif hash dinitctl &> /dev/null; then
+elif hash dinitctl 2>/dev/null; then
     # Check that the user dinit daemon is running
-    if ! pgrep -u $(id -u) dinit &> /dev/null; then
+    if ! pgrep -u $(id -u) dinit >/dev/null 2>&1; then
       echo "dinit user daemon is not running."
       exit 1
     fi
 
     # Make sure there's no already running session.
-    if dinitctl --user is-started veshell &> /dev/null; then
+    if dinitctl --user is-started veshell >/dev/null 2>&1; then
       echo 'A veshell session is already running.'
       exit 1
     fi
@@ -57,5 +65,52 @@ elif hash dinitctl &> /dev/null; then
     # Start veshell
     dinitctl --user start veshell
 else
-    echo "No systemd or dinit detected, please use veshell --session instead."
+    # No user service manager: Slackware, Void with runit, Alpine, Gentoo
+    # with OpenRC, the BSDs. Upstream used to give up here and tell you to
+    # run `veshell --session` by hand, which meant the .desktop entry a
+    # display manager reads was useless on those systems.
+    #
+    # There is nothing a service manager was doing that matters to veshell
+    # itself. The units set up a D-Bus session and a couple of environment
+    # variables; both are easy without one. veshell exports
+    # XDG_CURRENT_DESKTOP, XDG_SESSION_TYPE, GDK_BACKEND and
+    # QT_QPA_PLATFORM itself once its Wayland socket is up (see
+    # src/embedder/state.rs), so they are deliberately not set here.
+
+    # Refuse to start nested by accident. src/embedder/main.rs picks its
+    # backend by looking at DISPLAY and WAYLAND_DISPLAY: with either set it
+    # opens a window inside the running session instead of taking over the
+    # display, which is rarely what someone launching a session wants.
+    if [ -n "$WAYLAND_DISPLAY" ] || [ -n "$DISPLAY" ]; then
+        echo "veshell-session: DISPLAY or WAYLAND_DISPLAY is already set."
+        echo "veshell-session: veshell would start nested inside the running"
+        echo "veshell-session: session. Log out first, or run 'veshell'"
+        echo "veshell-session: directly if nesting is what you want."
+        exit 1
+    fi
+
+    # logind (or elogind) is what hands over the seat and, through libseat,
+    # DRM master. Without an active session /dev/dri/* cannot be opened and
+    # page flips fail with EACCES.
+    if [ -z "$XDG_RUNTIME_DIR" ]; then
+        echo "veshell-session: XDG_RUNTIME_DIR is not set."
+        echo "veshell-session: no session appears to have been created for"
+        echo "veshell-session: this login. Check that pam_elogind (or"
+        echo "veshell-session: pam_systemd) is enabled for the login service."
+        exit 1
+    fi
+
+    # xdg-desktop-portal reads this to pick the backends listed in
+    # /usr/share/xdg-desktop-portal/veshell-portals.conf. veshell sets it
+    # too, but portals may be activated before that happens.
+    export XDG_CURRENT_DESKTOP=veshell
+
+    if hash dbus-run-session 2>/dev/null; then
+        exec dbus-run-session -- veshell --session
+    else
+        echo "veshell-session: dbus-run-session not found; starting without"
+        echo "veshell-session: a session bus. Notifications, portals and the"
+        echo "veshell-session: network and bluetooth panels will not work."
+        exec veshell --session
+    fi
 fi

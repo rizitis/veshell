@@ -7,7 +7,7 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::input::KeyState;
 use smithay::backend::renderer::gles::ffi::Gles2;
 use smithay::desktop::{Space, Window};
-use smithay::input::keyboard::{KeyboardHandle, XkbConfig};
+use smithay::input::keyboard::KeyboardHandle;
 use smithay::input::pointer::{CursorImageStatus, PointerHandle};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Output, Scale};
@@ -208,10 +208,7 @@ impl<BackendData: Backend + 'static> State<BackendData> {
         let repeat_rate: u64 = 50;
         let keyboard = seat
             .add_keyboard(
-                XkbConfig {
-                    layout: &settings.keyboard.layout,
-                    ..XkbConfig::default()
-                },
+                settings.keyboard.xkb_config(),
                 repeat_delay as i32,
                 repeat_rate as i32,
             )
@@ -352,15 +349,18 @@ impl<BackendData: Backend + 'static> State<BackendData> {
 
     pub fn apply_veshell_settings(&mut self, settings: &VeshellSettings) {
         let keyboard = self.keyboard.clone();
-        keyboard
-            .set_xkb_config(
-                self,
-                XkbConfig {
-                    layout: &settings.keyboard.layout.clone(),
-                    ..XkbConfig::default()
-                },
-            )
-            .unwrap();
+        // The settings directory is watched, so editing settings.json
+        // re-applies the keymap without restarting the compositor.
+        if let Err(err) = keyboard.set_xkb_config(self, settings.keyboard.xkb_config()) {
+            // A bad layout or option string is a user typo, not a reason
+            // to take the session down: keep the previous keymap.
+            warn!(
+                ?err,
+                layout = %settings.keyboard.layout,
+                options = ?settings.keyboard.options,
+                "failed to apply keyboard settings, keeping the previous keymap"
+            );
+        }
     }
 
     pub fn construct_surface_message(&self, surface: &WlSurface) -> SurfaceMessage {

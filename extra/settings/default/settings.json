@@ -1,6 +1,10 @@
 {
     "keyboard": {
         "layout": "us(altgr-intl)",
+        "rules": "",
+        "model": "",
+        "variant": "",
+        "options": null,
         "swapAltAndWin": false,
         "hotkeys": {
             "system": {
