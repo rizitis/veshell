@@ -34,7 +34,7 @@ pub mod wayland {
         },
         xwayland::XWaylandClientData,
     };
-    use tracing::info;
+    use tracing::{debug, info};
 
     use crate::{
         meta_window_state::{meta_popup, meta_window::MetaWindowPatch},
@@ -195,7 +195,15 @@ pub mod wayland {
             // In Wayland, when the parent surface is committed,
             // subsurfaces are also committed recursively.
             for surface_id in subsurfaces_below.iter().chain(subsurfaces_above.iter()) {
-                let surface = self.surfaces.get(surface_id).unwrap().clone();
+                // get_direct_subsurfaces() walks the compositor's surface
+                // tree, which can list a child we have not registered yet
+                // or have already dropped. A miss is a race, not a bug --
+                // and this runs inside a dispatch callback, where a panic
+                // aborts the process instead of unwinding.
+                let Some(surface) = self.surfaces.get(surface_id).cloned() else {
+                    debug!(surface_id, "subsurface not tracked, skipping commit");
+                    continue;
+                };
                 let _ = self.commit(&surface);
             }
 
@@ -350,13 +358,22 @@ pub mod wayland {
                     });
                     if !initial_configure_sent {
                         if let Some(popup) = self.xdg_popups.get(&surface_id) {
-                            let meta_popup = self.get_meta_popup(surface_id).unwrap();
-                            with_states(surface, |data| {
-                                with_fractional_scale(data, |fractional| {
-                                    fractional.set_preferred_scale(meta_popup.scale_ratio);
+                            // The popup can be committed before the shell
+                            // has told us about it, so a missing meta popup
+                            // only means we cannot set a preferred scale yet.
+                            if let Some(meta_popup) = self.get_meta_popup(surface_id) {
+                                let scale_ratio = meta_popup.scale_ratio;
+                                with_states(surface, |data| {
+                                    with_fractional_scale(data, |fractional| {
+                                        fractional.set_preferred_scale(scale_ratio);
+                                    });
                                 });
-                            });
-                            popup.send_configure().expect("Failed to send configure");
+                            }
+                            // A client that disconnected between the commit
+                            // and here is normal; it is not worth aborting.
+                            if let Err(err) = popup.send_configure() {
+                                debug!(surface_id, ?err, "failed to send popup configure");
+                            }
                         }
                     }
                 }

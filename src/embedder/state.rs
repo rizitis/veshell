@@ -422,14 +422,25 @@ impl<BackendData: Backend + 'static> State<BackendData> {
         let role = with_states(surface, |surface_data| surface_data.role);
         match role {
             Some(compositor::SUBSURFACE_ROLE) => {
-                let subsurface_message = Self::construct_subsurface_role_message(surface);
-                Some(SurfaceRole::Subsurface(subsurface_message))
+                Self::construct_subsurface_role_message(surface).map(SurfaceRole::Subsurface)
             }
             _ => None,
         }
     }
 
-    pub fn construct_subsurface_role_message(surface: &WlSurface) -> SubsurfaceMessage {
+    /// Describe a subsurface for the shell, or None if it no longer has a
+    /// parent.
+    ///
+    /// A surface can still carry SUBSURFACE_ROLE after wl_subsurface has
+    /// been destroyed, or while its parent is being torn down, so
+    /// get_parent() returning None is a normal race and not a bug. This
+    /// used to unwrap, and because the call happens inside a wl_display
+    /// dispatch callback -- an extern "C" frame that cannot unwind -- the
+    /// panic turned straight into abort(), taking the compositor and every
+    /// client down with it. Firefox opening a tab was enough to hit it.
+    pub fn construct_subsurface_role_message(surface: &WlSurface) -> Option<SubsurfaceMessage> {
+        let parent = get_parent(surface)?;
+
         let location = with_states(surface, |surface_data| {
             surface_data
                 .cached_state
@@ -438,10 +449,10 @@ impl<BackendData: Backend + 'static> State<BackendData> {
                 .location
         });
 
-        SubsurfaceMessage {
+        Some(SubsurfaceMessage {
             position: location.into(),
-            parent: get_surface_id(&get_parent(surface).unwrap()),
-        }
+            parent: get_surface_id(&parent),
+        })
     }
 
     pub fn get_output_by_name(&self, name: &str) -> Option<&Output> {

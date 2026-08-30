@@ -35,7 +35,35 @@ Fixed so far:
 - veshell-session falls back to dbus-run-session where there is no user
   service manager, instead of printing "No systemd or dinit detected"
   and giving up. That made the .desktop entry a display manager reads
-  useless on Slackware, Void, Alpine, Gentoo and the BSDs.
+  useless on Slackware, Void, Alpine, Gentoo and the BSDs. It also keeps
+  a log of each session under /tmp, because a compositor that dies takes
+  its terminal with it and the panic message goes with it.
+
+- Six unwraps that a client could reach have been made fallible. These
+  all ran inside wl_display dispatch callbacks -- extern "C" frames that
+  cannot unwind -- so a panic there did not unwind into an error, it
+  called abort() and took the compositor and every client down with it:
+
+    * construct_subsurface_role_message() unwrapped get_parent(). A
+      surface can still carry SUBSURFACE_ROLE after its wl_subsurface is
+      destroyed, or while the parent is being torn down. Opening a tab
+      in Firefox was enough to hit this.
+    * the recursive subsurface commit unwrapped a lookup into the
+      surface map, which can miss a child that is not registered yet or
+      is already gone.
+    * a popup's meta popup was unwrapped before its initial configure,
+      although the popup can be committed before the shell knows of it.
+    * move_request and resize_request unwrapped the meta window, so a
+      client asking to be moved before the shell had created one killed
+      the session.
+    * constrain_popup_to_parent unwrapped the root toplevel, which is
+      not an xdg toplevel at all when the chain roots in XWayland.
+
+  The popup parent chain in new_popup was the worst of them: three
+  unwraps and a while loop with no exit. A chain whose parent id was in
+  neither map panicked, and one pointing back at itself spun forever
+  with the compositor wedged. It now walks with a bound and bails out
+  cleanly. Upstream had left a "TODO: Revise this unwrap" on it.
 
 Still broken:
 =============
@@ -48,3 +76,6 @@ Still broken:
 - Two zwp_linux_dmabuf_v1 globals are created in drm_backend.rs
 - get_settings() re-reads and re-parses both settings files on every
   key press
+- Around 340 unwrap/expect calls remain. Most are in initialisation,
+  where aborting is the right answer, but the dispatch paths deserve
+  another pass.

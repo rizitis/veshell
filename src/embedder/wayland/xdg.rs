@@ -25,7 +25,7 @@ pub mod xdg {
             },
         },
     };
-    use tracing::{info, warn};
+    use tracing::{debug, info, warn};
     use uuid::Uuid;
 
     use crate::{
@@ -122,44 +122,90 @@ pub mod xdg {
                     .geometry
                     .map(|geometry| geometry.into())
             });
-            // TODO: Revise this unwrap.
-            // Wayland states that popups without parents can exist but I don't know in what case.
-            let parent_surface_id = get_surface_id(&parent.unwrap());
+            // xdg_surface.get_popup takes a nullable parent, so a popup
+            // with no parent is legal protocol. Nothing sensible can be
+            // positioned without one, so drop it rather than abort.
+            let Some(parent) = parent else {
+                debug!(surface_id, "popup has no parent, ignoring it");
+                self.xdg_popups.remove(&surface_id);
+                return;
+            };
+            let parent_surface_id = get_surface_id(&parent);
 
-            // Parent id can be either meta window or meta popup.
-            let parent_meta_window_id = self
+            // The parent is either a meta window or another meta popup. In
+            // the second case, walk up the popup chain accumulating the
+            // offsets until a meta window is reached.
+            //
+            // Every step here used to unwrap, and the loop had no way out:
+            // a chain whose parent id is in neither map panicked, and a
+            // chain that pointed back at itself spun forever. Both are
+            // reachable from a client that destroys a popup at the wrong
+            // moment, and this runs in a dispatch callback where a panic
+            // aborts the process.
+            let parent_meta_window_id = match self
                 .meta_window_state
                 .meta_window_id_per_surface_id
                 .get(&parent_surface_id)
                 .cloned()
-                .unwrap_or_else(|| {
-                    let parent_meta_popup = self.get_meta_popup(parent_surface_id).unwrap();
+            {
+                Some(id) => id,
+                None => {
+                    let Some(parent_meta_popup) = self.get_meta_popup(parent_surface_id) else {
+                        debug!(
+                            surface_id,
+                            parent_surface_id,
+                            "popup parent is neither a window nor a popup, ignoring it"
+                        );
+                        self.xdg_popups.remove(&surface_id);
+                        return;
+                    };
                     position = (
                         position.x + parent_meta_popup.position.0.x,
                         position.y + parent_meta_popup.position.0.y,
                     )
                         .into();
-                    // if parent is a meta popup find the root meta window
+
                     let mut meta_parent_id = parent_meta_popup.parent;
-                    while !self
-                        .meta_window_state
-                        .meta_windows
-                        .contains_key(&meta_parent_id)
-                    {
-                        let parent_meta_popup = self
+                    // A popup chain is a handful of entries deep in
+                    // practice; this bound only exists so a cycle cannot
+                    // hang the compositor.
+                    let mut hops = 0;
+                    let root = loop {
+                        if self
+                            .meta_window_state
+                            .meta_windows
+                            .contains_key(&meta_parent_id)
+                        {
+                            break Some(meta_parent_id.clone());
+                        }
+                        hops += 1;
+                        if hops > 32 {
+                            warn!(surface_id, "popup parent chain too deep, ignoring popup");
+                            break None;
+                        }
+                        let Some(parent_meta_popup) = self
                             .meta_window_state
                             .meta_popups
                             .get(&meta_parent_id)
-                            .unwrap();
+                        else {
+                            debug!(surface_id, "popup parent chain is broken, ignoring popup");
+                            break None;
+                        };
                         position = (
                             position.x + parent_meta_popup.position.0.x,
                             position.y + parent_meta_popup.position.0.y,
                         )
                             .into();
                         meta_parent_id = parent_meta_popup.parent.clone();
-                    }
-                    meta_parent_id.clone()
-                });
+                    };
+
+                    let Some(root) = root else {
+                        self.xdg_popups.remove(&surface_id);
+                        return;
+                    };
+                    root
+                }
+            };
 
             /* let root_parent = find_popup_root_surface(&PopupKind::Xdg(surface.clone())).unwrap();
             let parent_surface_id = get_surface_id(&root_parent);
@@ -222,7 +268,13 @@ pub mod xdg {
 
         fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, _serial: Serial) {
             let surface_id = get_surface_id(surface.wl_surface());
-            let meta_window = self.get_meta_window(surface_id).unwrap();
+            // A client may ask to be moved before the shell has created a
+            // meta window for it. Ignoring the request is the right answer;
+            // aborting the compositor is not.
+            let Some(meta_window) = self.get_meta_window(surface_id) else {
+                debug!(surface_id, "move request for an unknown window, ignoring");
+                return;
+            };
             let platform_method_channel = &mut self.flutter_engine_mut().platform_method_channel;
             platform_method_channel.invoke_method(
                 "interactive_move",
@@ -241,9 +293,14 @@ pub mod xdg {
             edges: xdg_toplevel::ResizeEdge,
         ) {
             let surface_id = get_surface_id(surface.wl_surface());
-            let meta_window = self.get_meta_window(surface_id).unwrap();
+            let Some(meta_window) = self.get_meta_window(surface_id) else {
+                debug!(surface_id, "resize request for an unknown window, ignoring");
+                return;
+            };
 
-            let pointer = self.seat.get_pointer().unwrap();
+            let Some(pointer) = self.seat.get_pointer() else {
+                return;
+            };
             if pointer.has_grab(serial) {
                 pointer.unset_grab(self, serial, self.clock.now().as_millis() as u32);
             }
@@ -497,9 +554,15 @@ pub mod xdg {
                 return;
             };
             if let PopupKind::Xdg(popup) = popup {
-                let toplevel = self.xdg_toplevels.get(&get_surface_id(&root)).unwrap();
+                // The root of a popup chain is not always an xdg toplevel we
+                // track: XWayland surfaces and popups whose parent has just
+                // gone away both land here. Without a root there is nothing
+                // to constrain against, so leave the popup as it is.
+                let Some(toplevel) = self.xdg_toplevels.get(&get_surface_id(&root)) else {
+                    return;
+                };
                 let target: Rectangle<i32, Logical> = toplevel.with_pending_state(|state| {
-                    let size = state.size.or(Some((0, 0).into())).unwrap();
+                    let size = state.size.unwrap_or_else(|| (0, 0).into());
                     Rectangle::new((0, 0).into(), (size.w, size.h).into())
                 });
 
