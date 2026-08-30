@@ -19,6 +19,73 @@ fi
 : "${XCURSOR_SIZE:=24}"
 export XCURSOR_THEME XCURSOR_SIZE
 
+# ---------------------------------------------------------------- logging --
+#
+# A compositor that dies takes its terminal with it, so anything printed
+# to the console is gone before it can be read. Keep a copy on disk.
+#
+# VESHELL_LOG_DIR chooses where; VESHELL_LOG=no turns it off entirely.
+# RUST_LOG is left alone if the caller already set it -- "warn" is quiet
+# enough to run with permanently, and get_settings() logs at info on
+# every key press, which makes "info" and "debug" unusable for a session
+# you actually work in.
+
+: "${VESHELL_LOG:=yes}"
+: "${VESHELL_LOG_DIR:=/tmp}"
+: "${RUST_LOG:=warn}"
+export RUST_LOG
+
+veshell_log_setup() {
+    [ "$VESHELL_LOG" = "yes" ] || return 1
+    [ -d "$VESHELL_LOG_DIR" ] || return 1
+
+    VESHELL_LOG_FILE="$VESHELL_LOG_DIR/veshell-$(id -un)-$(date +%Y%m%d-%H%M%S).log"
+
+    : > "$VESHELL_LOG_FILE" 2>/dev/null || return 1
+    chmod 600 "$VESHELL_LOG_FILE" 2>/dev/null
+
+    # Convenience symlink to the most recent run.
+    ln -sf "$VESHELL_LOG_FILE" "$VESHELL_LOG_DIR/veshell-$(id -un)-latest.log" 2>/dev/null
+
+    {
+        echo "veshell-session $(date)"
+        echo "user:    $(id -un) ($(id -u))"
+        echo "tty:     $(tty 2>/dev/null)"
+        echo "session: ${XDG_SESSION_ID:-none} vt ${XDG_VTNR:-none} seat ${XDG_SEAT:-none}"
+        echo "runtime: ${XDG_RUNTIME_DIR:-unset}"
+        echo "cursor:  $XCURSOR_THEME ${XCURSOR_SIZE}"
+        echo "RUST_LOG=$RUST_LOG"
+        echo "---"
+    } >> "$VESHELL_LOG_FILE" 2>/dev/null
+
+    # Keep the last few runs and no more. Logs from a crashing compositor
+    # are worth having; a year of them is not.
+    ls -1t "$VESHELL_LOG_DIR"/veshell-"$(id -un)"-*.log 2>/dev/null \
+        | tail -n +11 | xargs -r rm -f 2>/dev/null
+
+    return 0
+}
+
+# Run veshell with output on the console AND in the log file, so a crash
+# is readable afterwards even though the terminal went with it. Falls
+# back to plain exec if the log file cannot be created -- never refuse to
+# start a session over logging.
+veshell_run() {
+    if ! veshell_log_setup; then
+        exec "$@"
+    fi
+
+    echo "veshell-session: logging to $VESHELL_LOG_FILE"
+
+    # A pipe loses the exit status of the left-hand side, and PIPESTATUS
+    # is a bashism this script cannot rely on, so stash it in a file.
+    _st="${VESHELL_LOG_FILE}.status"
+    { "$@" 2>&1; echo $? > "$_st"; } | tee -a "$VESHELL_LOG_FILE"
+    _rc=$( cat "$_st" 2>/dev/null || echo 0 )
+    rm -f "$_st"
+    return "${_rc:-0}"
+}
+
 # Try to detect the service manager that is being used
 if hash systemctl 2>/dev/null; then
     # Make sure there's no already running session.
@@ -106,11 +173,25 @@ else
     export XDG_CURRENT_DESKTOP=veshell
 
     if hash dbus-run-session 2>/dev/null; then
-        exec dbus-run-session -- veshell --session
+        veshell_run dbus-run-session -- veshell --session
     else
         echo "veshell-session: dbus-run-session not found; starting without"
         echo "veshell-session: a session bus. Notifications, portals and the"
         echo "veshell-session: network and bluetooth panels will not work."
-        exec veshell --session
+        veshell_run veshell --session
     fi
+
+    status=$?
+    if [ -n "$VESHELL_LOG_FILE" ]; then
+        echo "--- veshell exited with status $status at $(date)" \
+            >> "$VESHELL_LOG_FILE" 2>/dev/null
+        if [ "$status" != "0" ]; then
+            echo ""
+            echo "veshell-session: veshell exited with status $status."
+            echo "veshell-session: log: $VESHELL_LOG_FILE"
+            echo ""
+            grep -iE "panicked|ERROR" "$VESHELL_LOG_FILE" 2>/dev/null | tail -5
+        fi
+    fi
+    exit $status
 fi
